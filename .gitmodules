@@ -1,0 +1,12 @@
+[submodule "Aegis_Service_Discovery"]
+	path = Aegis_Service_Discovery
+	url = https://github.com/mateusmagalhaes22/Aegis_Service_Discovery.git
+[submodule "Aegis_Api_Gateway"]
+	path = Aegis_Api_Gateway
+	url = https://github.com/mateusmagalhaes22/Aegis_Api_Gateway.git
+[submodule "Aegis_Transaction_Ms"]
+	path = Aegis_Transaction_Ms
+	url = https://github.com/mateusmagalhaes22/Aegis_Transaction_Ms.git
+[submodule "Aegis_Identity_Ms"]
+	path = Aegis_Identity_Ms
+	url = https://github.com/mateusmagalhaes22/Aegis_Identity_Ms.git
