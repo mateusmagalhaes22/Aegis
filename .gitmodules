@@ -10,3 +10,6 @@
 [submodule "Aegis_Identity_Ms"]
 	path = Aegis_Identity_Ms
 	url = https://github.com/mateusmagalhaes22/Aegis_Identity_Ms.git
+[submodule "Aegis_Fraud_Engine"]
+	path = Aegis_Fraud_Engine
+	url = https://github.com/mateusmagalhaes22/Aegis_Fraud_Engine.git
