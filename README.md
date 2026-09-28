@@ -1,5 +1,295 @@
 # Aegis
 
+Distributed platform for financial transaction analysis. Aegis receives transactions, persists data, analyzes risk in real time through fraud rules, and updates the user's account when a transaction is approved.
+
+The project consists of independent Spring Boot microservices connected through service discovery with Eureka and asynchronous processing with Apache Kafka.
+
+## Overview
+
+```text
+Client
+   |
+   v
+API Gateway :8081
+   |
+   +--> Identity MS       (discovered through Eureka)
+   |
+   +--> Transaction MS    (discovered through Eureka)
+   |
+   v
+Eureka Service Discovery :8761
+
+Transaction MS -- transactions ------------------------> Fraud Engine
+Fraud Engine  -- transaction-fraud-analysis ------------> Identity MS
+Identity MS   -- transaction-validation ----------------> Transaction MS
+```
+
+The synchronous flow is used for authentication, user management, and HTTP transaction operations. Fraud validation and balance updates happen asynchronously through Kafka topics.
+
+## Current Features
+
+### Identity MS
+
+`Aegis_Identity_Ms` is responsible for:
+
+- registering users and preventing duplicate e-mail addresses;
+- storing passwords with BCrypt;
+- authenticating users by e-mail and password and issuing HS256 JWT tokens;
+- listing, retrieving, updating, and deleting users;
+- creating an active account with an initial zero balance;
+- consuming fraud analysis results;
+- applying approved transactions to the account balance;
+- preventing duplicate processing of the same transaction;
+- publishing the validation result for Transaction MS.
+
+Available routes:
+
+| Method | Route | Description | Auth |
+| --- | --- | --- | --- |
+| `POST` | `/auth/register` | Registers a user | No |
+| `POST` | `/auth/login` | Returns a JWT | No |
+| `GET` | `/users` | Lists users | JWT |
+| `GET` | `/users/{id}` | Retrieves a user by UUID | JWT |
+| `PUT` | `/users/{id}` | Updates a user | JWT |
+| `DELETE` | `/users/{id}` | Deletes a user | JWT |
+
+### Transaction MS
+
+`Aegis_Transaction_Ms` creates transactions with `PENDING` status, persists data in PostgreSQL, publishes new transactions to `transactions`, receives results from `transaction-validation`, and updates the status to `APPROVED` or `REJECTED`.
+
+Available routes:
+
+| Method | Route | Description |
+| --- | --- | --- |
+| `POST` | `/transactions` | Creates a transaction |
+| `GET` | `/transactions` | Lists transactions |
+| `GET` | `/transactions/{id}` | Retrieves a transaction |
+| `PUT` | `/transactions/{id}` | Updates the description |
+| `DELETE` | `/transactions/{id}` | Deletes a transaction |
+
+All service routes require a JWT.
+
+### Fraud Engine
+
+`Aegis_Fraud_Engine` consumes `transactions`, executes the fraud rules, stores the result, and publishes the analysis to `transaction-fraud-analysis`.
+
+Analysis results are classified as follows:
+
+- `APPROVED`: score equal to zero;
+- `SUSPICIOUS`: score greater than zero and lower than `100`;
+- `REJECTED`: score greater than or equal to `100`.
+
+Assuming that the above-average value rule is registered as an `@Bean`, the active rules are:
+
+1. **High-value transaction:** amounts above `1,000`, `5,000`, `10,000`, and `25,000` receive `20`, `40`, `60`, and `80` points respectively.
+2. **Multiple transactions:** checks transactions from the same user within the last ten minutes; one previous transaction adds `50` points, two or three add `80`, and four or more add `100`.
+3. **Above-average value:** compares the transaction with the user's average over the last 90 days and adds `60` points when the amount exceeds three times that average.
+
+Scores are added together, so a combination of rules can also reject a transaction.
+
+### Service Discovery
+
+`Aegis_Service_Discovery` runs the Eureka Server on port `8761`. It maintains the service registry and does not register itself as a client.
+
+### API Gateway
+
+`Aegis_Api_Gateway` is the HTTP entry point on port `8081`. It discovers services through Eureka, creates routes automatically, removes the first URL segment, and uses Spring Cloud LoadBalancer.
+
+Request format:
+
+```text
+http://localhost:8081/{service-id}/{service-route}
+```
+
+Service identifiers are converted to lowercase. With the current service names, examples are:
+
+```text
+POST http://localhost:8081/aegisidentity/auth/login
+GET  http://localhost:8081/aegisidentity/users
+POST http://localhost:8081/aegistransaction/transactions
+GET  http://localhost:8081/aegistransaction/transactions/{id}
+```
+
+The gateway forwards requests; authentication is validated by the target service.
+
+## Transaction Flow
+
+1. The client registers a user through `/auth/register`.
+2. The client logs in through `/auth/login` and receives a JWT.
+3. The client sends a transaction with `Authorization: Bearer {token}`.
+4. Transaction MS saves it as `PENDING` and publishes it to `transactions`.
+5. Fraud Engine evaluates the rules and publishes to `transaction-fraud-analysis`.
+6. Identity MS rejects fraudulent transactions or applies the amount to the account.
+7. Identity MS publishes `success` or `failure` to `transaction-validation`.
+8. Transaction MS updates the final status.
+
+## Kafka Topics
+
+| Topic | Producer | Consumer | Purpose |
+| --- | --- | --- | --- |
+| `transactions` | Transaction MS | Fraud Engine | Requests fraud analysis |
+| `transaction-fraud-analysis` | Fraud Engine | Identity MS | Publishes the analysis |
+| `transaction-validation` | Identity MS | Transaction MS | Approves or rejects |
+
+Kafka is expected at `localhost:9092` by default.
+
+## Required Infrastructure
+
+- Java 25 for Transaction MS and Fraud Engine;
+- Java 21 or higher for the gateway, identity, and discovery services;
+- PostgreSQL at `localhost:5432`;
+- databases `identity`, `transaction`, and `antifraud`;
+- PostgreSQL user `root` with password `root`;
+- Apache Kafka at `localhost:9092`;
+- Eureka at `localhost:8761`.
+
+The services use `spring.jpa.hibernate.ddl-auto=update`, so tables are updated during startup.
+
+## Getting the Project
+
+```bash
+git clone --recurse-submodules https://github.com/mateusmagalhaes22/Aegis.git
+cd Aegis
+```
+
+To initialize submodules in an existing clone:
+
+```bash
+git submodule update --init --recursive
+```
+
+Submodules:
+
+```text
+Aegis_Service_Discovery/
+Aegis_Api_Gateway/
+Aegis_Transaction_Ms/
+Aegis_Identity_Ms/
+Aegis_Fraud_Engine/
+```
+
+## Running the System
+
+Start PostgreSQL and Kafka first. Then open one terminal for each service and start them in the following order.
+
+### 1. Eureka
+
+```bash
+cd Aegis_Service_Discovery
+./mvnw spring-boot:run
+```
+
+Dashboard: `http://localhost:8761`.
+
+### 2. Identity MS
+
+```bash
+cd Aegis_Identity_Ms
+./mvnw spring-boot:run
+```
+
+### 3. Transaction MS
+
+```bash
+cd Aegis_Transaction_Ms
+./mvnw spring-boot:run
+```
+
+### 4. Fraud Engine
+
+```bash
+cd Aegis_Fraud_Engine
+./mvnw spring-boot:run
+```
+
+### 5. API Gateway
+
+```bash
+cd Aegis_Api_Gateway
+./mvnw spring-boot:run
+```
+
+The business services use `server.port: 0` and receive random ports. Use the gateway after the instances become visible in Eureka. On Windows, use `mvnw.cmd` instead of `./mvnw`.
+
+## Usage Example
+
+### Registration
+
+```bash
+curl -X POST http://localhost:8081/aegisidentity/auth/register \
+	-H 'Content-Type: application/json' \
+	-d '{"name":"Maria Silva","email":"maria@example.com","password":"senha-segura","cpf":"12345678900"}'
+```
+
+### Login
+
+```bash
+curl -X POST http://localhost:8081/aegisidentity/auth/login \
+	-H 'Content-Type: application/json' \
+	-d '{"email":"maria@example.com","password":"senha-segura"}'
+```
+
+Use the returned token when creating a transaction:
+
+```bash
+curl -X POST http://localhost:8081/aegistransaction/transactions \
+	-H 'Content-Type: application/json' \
+	-H 'Authorization: Bearer YOUR_TOKEN' \
+	-d '{"description":"Online purchase","userId":"USER_ID","amount":1500.00}'
+```
+
+Creation returns `PENDING`. After Kafka processing, retrieve the transaction to check whether it is `APPROVED` or `REJECTED`.
+
+## Environment Configuration
+
+| Variable | Default | Usage |
+| --- | --- | --- |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker |
+| `KAFKA_TRANSACTIONS_TOPIC` | `transactions` | Transaction flow |
+| `KAFKA_TRANSACTION_VALIDATION_TOPIC` | `transaction-validation` | Validation result |
+| `KAFKA_TRANSACTION_FRAUD_ANALYSIS_TOPIC` | `transaction-fraud-analysis` | Fraud analysis result |
+| `KAFKA_CONSUMER_GROUP` | service-specific | Consumer groups |
+| `JWT_SECRET` | project default | Transaction MS |
+
+For production, replace the default secrets with strong externally managed values. The secret used to issue and validate JWTs must be compatible across the services.
+
+## Build and Tests
+
+Each submodule has its own Maven Wrapper:
+
+```bash
+cd Aegis_Identity_Ms
+./mvnw clean test
+```
+
+To test all modules:
+
+```bash
+for service in Aegis_Service_Discovery Aegis_Api_Gateway Aegis_Transaction_Ms Aegis_Identity_Ms Aegis_Fraud_Engine; do
+	(cd "$service" && ./mvnw clean test) || exit 1
+done
+```
+
+To build a JAR:
+
+```bash
+./mvnw clean package
+java -jar target/*.jar
+```
+
+## Limitations and Considerations
+
+- The gateway uses discovery-generated routes rather than manually defined routes.
+- The default JWT secret must not be used in production.
+- `ddl-auto: update` is suitable for development, not for production migrations.
+- All three Kafka topics must use compatible names across the services.
+
+---
+
+## Versão em Português
+
+# Aegis
+
 Plataforma distribuída de análise de transações financeiras. O Aegis recebe transações, persiste os dados, analisa riscos em tempo real por meio de regras antifraude e atualiza a conta do usuário quando a transação é aprovada.
 
 O projeto é composto por microsserviços Spring Boot independentes, conectados por descoberta de serviços com Eureka e processamento assíncrono com Apache Kafka.
